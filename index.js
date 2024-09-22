@@ -3,6 +3,8 @@ import mongoose from 'mongoose';
 import Visit from './models/Visit.js';
 import Patient from './models/Patient.js';
 import cors from 'cors';
+import { addPatientValidation, addVisitValidation } from './validation.js';
+import { handleValidation } from './utils/handleValidation.js';
 
 mongoose
   .connect(
@@ -21,14 +23,33 @@ app.use(express.json());
 app.get('/visits/:date/:month', async (req, res) => {
   const { date, month } = req.params;
   try {
-    const visits = await Visit.find({ date: Number(date), month: month });
+    const visits = await Visit.find({ date: date, month: month }).sort({ arrivalTime: 1 });
+
+    const currentTimeNumber = new Date().getHours();
+    const closestVisit = visits.reduce(
+      (closest, visit, index) => {
+        const visitTimeNumber = Number(visit.arrivalTime.slice(0, 2));
+        const difference = Math.abs(currentTimeNumber - visitTimeNumber);
+
+        return difference < closest.difference
+          ? { index, arrivalTime: visit.arrivalTime, difference }
+          : closest;
+      },
+      { difference: Infinity, index: -1 },
+    );
+
+    if (closestVisit.index !== -1) {
+      const nextVisit = visits[closestVisit.index];
+      nextVisit.status = 'upcoming';
+    }
+
     if (visits.length === 0) {
-      return res.status(403).json({ message: 'На сегодня пациентов нет, отдыхай:)' });
+      return res.status(300).json({ message: 'На сегодня пациентов нет, отдыхай:)' });
     }
     res.json(visits);
   } catch (error) {
     console.error('Error fetching visits:', error);
-    res.status(500).json({ error: 'Internal Server Error' });
+    res.status(403).json({ message: 'Произошла ошибка' });
   }
 });
 
@@ -55,35 +76,51 @@ app.get('/patients/:id', async (req, res) => {
   }
 });
 
-app.get('/visits/history/:id', async (req, res) => {
-  const id = req.params.id;
+app.get('/historyVisits/:id', async (req, res) => {
+  const { id } = req.params;
+  console.log(id);
+
   try {
-    const visits = await Visit.find({ patient: id });
+    const visits = await Visit.find({ patientId: id }).sort({ date: -1 });
     res.json(visits);
   } catch (error) {
     res.status(500).json({ message: 'Произошла ошибка при получении истории посещений' });
   }
 });
 
-app.post('/addVisit', async (req, res) => {
+app.get('/patientVisit/:date/:id', async (req, res) => {
+  const { date, id } = req.params;
+  try {
+    const visits = await Visit.find({ date: date, patientId: id });
+    res.json(visits);
+  } catch (error) {
+    res.status(500).json({ message: 'Произошла ошибка при получении посещения' });
+  }
+});
+
+app.post('/addVisit', addVisitValidation, handleValidation, async (req, res) => {
   try {
     const patient = await Patient.findOne({
       fullName: req.body.fullName,
-    });
-    const doc = new Visit({
-      fullName: req.body.fullName,
-      date: req.body.date,
-      month: req.body.month,
-      diagnosis: req.body.diagnosis,
-      arrivalTime: req.body.arrivalTime,
-      price: req.body.price,
-      numberTooth: req.body.numberTooth,
     });
     if (!patient) {
       return res.status(400).json({
         message: 'Пожалуйста, создайте или выберите пациента перед добавлением посещения.',
       });
     }
+
+    const doc = new Visit({
+      patientId: patient._id,
+      fullName: patient.fullName,
+      date: req.body.date,
+      month: req.body.month,
+      prepayment: req.body.prepayment,
+      diagnosis: req.body.diagnosis,
+      arrivalTime: req.body.arrivalTime,
+      price: req.body.price,
+      numberTooth: req.body.numberTooth,
+      status: 'expectation',
+    });
 
     const visit = await doc.save();
 
@@ -96,7 +133,7 @@ app.post('/addVisit', async (req, res) => {
   }
 });
 
-app.post('/addPatient', async (req, res) => {
+app.post('/addPatient', addPatientValidation, handleValidation, async (req, res) => {
   try {
     const newPatient = new Patient({
       fullName: req.body.fullName,
@@ -118,6 +155,7 @@ app.delete('/deletePatient/:id', async (req, res) => {
   const { id } = req.params;
   try {
     const patient = await Patient.findByIdAndDelete(id);
+    await Visit.deleteMany({ patientId: id });
     res.json(patient);
   } catch (error) {
     res.status(500).json({
@@ -138,10 +176,10 @@ app.delete('/deleteVisit/:id', async (req, res) => {
   }
 });
 
-app.patch('/changePatient/:id', async (req, res) => {
+app.patch('/changePatient/:id', addPatientValidation, handleValidation, async (req, res) => {
   const { id } = req.params;
   try {
-    const patientChange = await Patient.findByIdAndUpdate(
+    const patientChange = await Patient.find(
       { _id: id },
       {
         fullName: req.body.fullName,
@@ -150,7 +188,7 @@ app.patch('/changePatient/:id', async (req, res) => {
     );
     if (!patientChange) {
       return res.status(400).json({
-        message: 'Пациент не найден',
+        message: 'Пациент не найден',
       });
     } else {
       await Patient.findByIdAndUpdate(
@@ -160,18 +198,28 @@ app.patch('/changePatient/:id', async (req, res) => {
           phoneNumber: req.body.phoneNumber,
         },
       );
-      res.json({ message: 'Пациент обновлен' });
+      await Visit.updateMany({ patientId: id }, { fullName: req.body.fullName });
+      res.json({ message: 'Пациент и посещения обновлены' });
     }
   } catch (error) {
     res.status(500).json({
-      message: 'Произошла ошибка при обновлении пациента',
+      message: 'Произошла ошибка при обновлении пациента и посещений',
     });
   }
 });
 
-app.patch('/changeVisit/:id', async (req, res) => {
+app.patch('/changeVisit/:id', addVisitValidation, handleValidation, async (req, res) => {
   const { id } = req.params;
   try {
+    const patient = await Patient.findOne({
+      fullName: req.body.fullName,
+    });
+    if (!patient) {
+      return res.status(400).json({
+        message: 'Пожалуйста, создайте или выберите пациента перед добавлением посещения.',
+      });
+    }
+
     await Visit.findByIdAndUpdate(
       { _id: id },
       {
@@ -182,6 +230,7 @@ app.patch('/changeVisit/:id', async (req, res) => {
         arrivalTime: req.body.arrivalTime,
         price: req.body.price,
         numberTooth: req.body.numberTooth,
+        prepayment: req.body.prepayment,
       },
     );
     res.json({ message: 'Посещение обновлено' });
@@ -191,7 +240,38 @@ app.patch('/changeVisit/:id', async (req, res) => {
     });
   }
 });
-
+app.post('/acceptVisit/:id', async (req, res) => {
+  const { id } = req.params;
+  try {
+    await Visit.findByIdAndUpdate(
+      { _id: id },
+      {
+        status: 'accepted',
+      },
+    );
+    res.json({ message: 'Посещение принято' });
+  } catch (error) {
+    res.status(500).json({
+      message: 'Произошла ошибка при получении пациента',
+    });
+  }
+});
+app.post('/cancelledVisit/:id', async (req, res) => {
+  const { id } = req.params;
+  try {
+    await Visit.findByIdAndUpdate(
+      { _id: id },
+      {
+        status: 'cancelled',
+      },
+    );
+    res.json({ message: 'Посещение отменено' });
+  } catch (error) {
+    res.status(500).json({
+      message: 'Произошла ошибка при получении пациента',
+    });
+  }
+});
 app.listen(5000, (err) => {
   if (err) {
     return console.log(err);

@@ -1,13 +1,25 @@
 import mongoose from 'mongoose';
 
 const VisitSchema = new mongoose.Schema({
+  patientId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Patient',
+  },
   fullName: {
     type: String,
     required: true,
   },
+  status: {
+    type: String,
+    required: false,
+  },
   date: {
     type: Number,
     required: true,
+  },
+  prepayment: {
+    type: String,
+    required: false,
   },
   month: {
     type: String,
@@ -28,11 +40,6 @@ const VisitSchema = new mongoose.Schema({
   numberTooth: {
     type: Number,
     required: true,
-  },
-  patient: {
-    type: mongoose.Schema.Types.ObjectId,
-    ref: 'Patient',
-    required: false,
   },
 });
 
